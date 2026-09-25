@@ -109,8 +109,8 @@ class PolicyAgent:
         self.trace = trace
         api_key = os.getenv("GEMINI_API_KEY")
         self.client = genai.Client(api_key=api_key) if api_key else None
-        self.model_name = "gemini-3.8-flash"
-        self.fallback_model = "gemini-2.5-flash"
+        self.model_name = "gemini-2.5-flash"
+        self.fallback_model = "gemini-2.0-flash"
 
     async def adjudicate(
         self,
@@ -127,25 +127,16 @@ class PolicyAgent:
 
         # 1. Fetch policy from MCP (with robust error handling)
         try:
-            cached_policy = context.get_cached("get_policy", {"policy_version": policy_version})
-            if cached_policy is None:
-                policy_ev = await self.gateway.call(
-                    "get_policy", case_id=case_id, policy_version=policy_version
-                )
-                context.set_cached("get_policy", {"policy_version": policy_version}, policy_ev)
-            else:
-                policy_ev = cached_policy
-
+            policy_ev = await context.call_tool(
+                self.gateway,
+                "get_policy",
+                case_id=case_id,
+                trace=self.trace,
+                actor="policy_agent",
+                policy_version=policy_version,
+            )
             ref = policy_ev["evidence_ref"]
             evidence_refs.append(ref)
-            self.trace.emit(
-                case_id=case_id,
-                event_type="tool_result_consumed",
-                actor="policy_agent",
-                tool_name="get_policy",
-                evidence_refs=[ref],
-                attributes={"policy_version": policy_version},
-            )
             policy_rules = policy_ev["data"].get("rules", {})
         except Exception:
             policy_rules = {}

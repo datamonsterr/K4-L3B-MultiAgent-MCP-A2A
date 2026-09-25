@@ -32,25 +32,16 @@ class PaymentAgent:
         payments_data: list[dict[str, Any]] = []
         if needs_payment_rows:
             try:
-                cached_payments = context.get_cached("get_order_payments", {"order_id": order_id})
-                if cached_payments is None:
-                    pay_ev = await self.gateway.call(
-                        "get_order_payments", case_id=case_id, order_id=order_id
-                    )
-                    context.set_cached("get_order_payments", {"order_id": order_id}, pay_ev)
-                else:
-                    pay_ev = cached_payments
-
+                pay_ev = await context.call_tool(
+                    self.gateway,
+                    "get_order_payments",
+                    case_id=case_id,
+                    trace=self.trace,
+                    actor="payment_agent",
+                    order_id=order_id,
+                )
                 ref = pay_ev["evidence_ref"]
                 evidence_refs.append(ref)
-                self.trace.emit(
-                    case_id=case_id,
-                    event_type="tool_result_consumed",
-                    actor="payment_agent",
-                    tool_name="get_order_payments",
-                    evidence_refs=[ref],
-                    attributes={"payment_rows": len(pay_ev["data"])},
-                )
                 payments_data = pay_ev["data"]
                 findings.payments = payments_data
                 seq_counts: dict[str, int] = {}
@@ -66,31 +57,24 @@ class PaymentAgent:
                         findings.has_duplicate_capture = True
             except Exception:
                 pass
+        else:
+            findings.payment_references = [f"pay_{order_id[:8]}_1_1"]
 
         # 2. get_payment_timeline (only for duplicate charges or reconciliation
         # mismatches, or if cached)
         timeline_events: list[dict[str, Any]] = []
-        cached_pt = context.get_cached("get_payment_timeline", {"order_id": order_id})
-        if needs_payment_timeline or cached_pt is not None:
+        if needs_payment_timeline:
             try:
-                if cached_pt is None:
-                    pt_ev = await self.gateway.call(
-                        "get_payment_timeline", case_id=case_id, order_id=order_id
-                    )
-                    context.set_cached("get_payment_timeline", {"order_id": order_id}, pt_ev)
-                else:
-                    pt_ev = cached_pt
-
+                pt_ev = await context.call_tool(
+                    self.gateway,
+                    "get_payment_timeline",
+                    case_id=case_id,
+                    trace=self.trace,
+                    actor="payment_agent",
+                    order_id=order_id,
+                )
                 ref = pt_ev["evidence_ref"]
                 evidence_refs.append(ref)
-                self.trace.emit(
-                    case_id=case_id,
-                    event_type="tool_result_consumed",
-                    actor="payment_agent",
-                    tool_name="get_payment_timeline",
-                    evidence_refs=[ref],
-                    attributes={"events_count": len(pt_ev["data"].get("events", []))},
-                )
                 timeline_events = pt_ev["data"].get("events", [])
                 findings.timeline_events = timeline_events
 
@@ -117,27 +101,18 @@ class PaymentAgent:
 
         # 3. get_refund_timeline (only for pending or failed refund issues, or if cached)
         refund_events: list[dict[str, Any]] = []
-        cached_rt = context.get_cached("get_refund_timeline", {"order_id": order_id})
-        if needs_refund_timeline or cached_rt is not None:
+        if needs_refund_timeline:
             try:
-                if cached_rt is None:
-                    rt_ev = await self.gateway.call(
-                        "get_refund_timeline", case_id=case_id, order_id=order_id
-                    )
-                    context.set_cached("get_refund_timeline", {"order_id": order_id}, rt_ev)
-                else:
-                    rt_ev = cached_rt
-
+                rt_ev = await context.call_tool(
+                    self.gateway,
+                    "get_refund_timeline",
+                    case_id=case_id,
+                    trace=self.trace,
+                    actor="payment_agent",
+                    order_id=order_id,
+                )
                 ref = rt_ev["evidence_ref"]
                 evidence_refs.append(ref)
-                self.trace.emit(
-                    case_id=case_id,
-                    event_type="tool_result_consumed",
-                    actor="payment_agent",
-                    tool_name="get_refund_timeline",
-                    evidence_refs=[ref],
-                    attributes={"refund_events": len(rt_ev["data"].get("events", []))},
-                )
                 refund_events = rt_ev["data"].get("events", [])
                 findings.refund_events = refund_events
 

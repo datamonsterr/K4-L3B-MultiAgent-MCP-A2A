@@ -8,7 +8,8 @@ from typing import Any
 from ..contracts import Contracts
 from ..mcp_gateway import EvidenceGateway
 from ..trace import TraceWriter
-from .models import CaseEvidenceContext
+from .entity_agent import EntityAgent
+from .models import ALLOWED_TOOLS_BY_TOPIC, CaseEvidenceContext
 from .order_agent import OrderAgent
 from .payment_agent import PaymentAgent
 from .policy_agent import PolicyAgent
@@ -22,23 +23,44 @@ def determine_required_investigations(case: dict[str, Any]) -> dict[str, bool]:
     topics = {c.get("topic") for c in claims if c.get("topic")}
     scope = case.get("investigation_scope", {})
     message = case.get("customer_request", {}).get("message", "").lower()
+    claimed_id = case.get("customer_request", {}).get("claimed_order_id")
 
     delivery_topics = {"late_delivery_seller", "late_delivery_logistics"}
+    payment_topics = {
+        "valid_split_payment",
+        "duplicate_charge",
+        "payment_mismatch",
+        "refund_pending",
+        "refund_failed",
+    }
+    cancel_topics = {"canceled_order_paid", "unavailable_order_paid"}
 
-    is_delivery_dispute = bool(topics & delivery_topics) or (
-        "unsupported_claim" in topics
+    is_delivery_dispute = bool(topics & delivery_topics)
+    is_payment_dispute = bool(topics & payment_topics)
+    is_cancel_dispute = bool(topics & cancel_topics)
+    is_unsupported_claim = "unsupported_claim" in topics
+
+    needs_shipment = is_delivery_dispute or (
+        is_unsupported_claim
         and any(
             w in message for w in ["giao", "ship", "vận chuyển", "nhận hàng", "delivery", "late"]
         )
     )
-
-    needs_shipment = is_delivery_dispute or ("unsupported_claim" in topics)
     needs_order = True
-    needs_items = True
-    needs_payment_rows = True
-    needs_sellers = bool(scope.get("include_seller_locations", False))
+    needs_items = is_delivery_dispute or ("payment_mismatch" in topics)
+    needs_payment_rows = (
+        is_payment_dispute
+        or is_cancel_dispute
+        or (
+            is_unsupported_claim
+            and any(w in message for w in ["thanh toán", "tiền", "charge", "refund", "trả"])
+        )
+    )
     needs_payment_timeline = bool(topics & {"duplicate_charge", "payment_mismatch"})
     needs_refund_timeline = bool(topics & {"refund_pending", "refund_failed"})
+    needs_sellers = bool(
+        scope.get("include_seller_locations", False) and ("late_delivery_seller" in topics)
+    )
     needs_product_context = bool(
         scope.get("include_product_context", False)
         and any(
@@ -47,7 +69,9 @@ def determine_required_investigations(case: dict[str, Any]) -> dict[str, bool]:
         )
     )
     needs_customer_history = bool(
-        scope.get("include_customer_history", False) and case.get("customer_unique_id_hint")
+        scope.get("include_customer_history", False)
+        and (not claimed_id or len(claimed_id) != 32)
+        and case.get("customer_unique_id_hint")
     )
 
     return {
@@ -70,6 +94,7 @@ class CoordinatorAgent:
         self.gateway = gateway
         self.trace = trace
         self.contracts = contracts
+        self.entity_agent = EntityAgent(gateway, trace)
         self.order_agent = OrderAgent(gateway, trace)
         self.shipment_agent = ShipmentAgent(gateway, trace)
         self.payment_agent = PaymentAgent(gateway, trace)
@@ -78,63 +103,26 @@ class CoordinatorAgent:
 
     async def solve(self, case: dict[str, Any]) -> dict[str, Any]:
         case_id = case["case_id"]
-        context = CaseEvidenceContext(case_id)
+
+        # 1. Inspect input structure and primary topic
+        claims = case.get("customer_request", {}).get("claims", [])
+        primary_topic = claims[0].get("topic") if claims else "unsupported_claim"
+
+        # Gated case context: restrict allowed tools based on dispute topic
+        allowed_tools = ALLOWED_TOOLS_BY_TOPIC.get(primary_topic)
+        context = CaseEvidenceContext(case_id, allowed_tools=allowed_tools)
+
+        # 2. Entity Agent: disambiguate customer, user data, and order candidates
+        entity_findings = await self.entity_agent.resolve(case, context)
+        resolved_order_id = entity_findings.resolved_order_id
+        rejected_candidates = entity_findings.rejected_candidates
+        customer_unique_id = entity_findings.customer_unique_id
+        related_order_ids = entity_findings.related_order_ids
+
+        # 3. Topic-driven Specialist Routing (especially first topic)
         plan = determine_required_investigations(case)
 
-        # 1. Entity Resolution & Customer Context
-        claimed_id = case.get("customer_request", {}).get("claimed_order_id")
-        candidate_ids = case.get("candidate_order_ids", [])
-        hint = case.get("customer_unique_id_hint")
-
-        # Query customer history only when scoped and needed
-        related_order_ids: list[str] = []
-        customer_unique_id: str | None = hint
-        if plan["needs_customer_history"] and hint:
-            try:
-                cust_ev = await self.gateway.call(
-                    "get_customer_history", case_id=case_id, customer_unique_id=hint
-                )
-                context.record_evidence("get_customer_history", cust_ev)
-                ref = cust_ev["evidence_ref"]
-                self.trace.emit(
-                    case_id=case_id,
-                    event_type="tool_result_consumed",
-                    actor="coordinator",
-                    tool_name="get_customer_history",
-                    evidence_refs=[ref],
-                    attributes={"orders_found": len(cust_ev["data"].get("orders", []))},
-                )
-                cust_data = cust_ev["data"]
-                customer_unique_id = cust_data.get("customer_unique_id") or hint
-                for o in cust_data.get("orders", []):
-                    oid = o.get("order_id")
-                    if oid and oid not in related_order_ids:
-                        related_order_ids.append(oid)
-            except Exception:
-                pass
-
-        # Disambiguate candidates
-        # Real order IDs are 32-hex characters; mock candidates start with 'candidate-'
-        resolved_order_id = claimed_id
-        rejected_candidates: list[str] = []
-
-        for cand in candidate_ids:
-            if cand.startswith("candidate-"):
-                rejected_candidates.append(cand)
-            elif len(cand) == 32:
-                resolved_order_id = cand
-            else:
-                rejected_candidates.append(cand)
-
-        if not resolved_order_id:
-            resolved_order_id = candidate_ids[0] if candidate_ids else "unknown_order"
-
-        if resolved_order_id not in related_order_ids and resolved_order_id != "unknown_order":
-            related_order_ids.insert(0, resolved_order_id)
-
-        # 2. Task Assignment to Specialists (bounded and selective)
-        scope = case.get("investigation_scope", {})
-
+        # Emit task assignment for active specialist agents
         if plan["needs_order"]:
             self.trace.emit(
                 case_id=case_id,
@@ -164,16 +152,17 @@ class CoordinatorAgent:
                 attributes={"task": "inspect_payments_reconciliation_refunds"},
             )
 
-        # Handoff to specialists
+        # Handoff to active specialists
         self.trace.emit(
             case_id=case_id,
             event_type="handoff",
             actor="coordinator",
             target="specialists",
-            attributes={"order_id": resolved_order_id},
+            attributes={"order_id": resolved_order_id, "primary_topic": primary_topic},
         )
 
-        # 3. Parallel Specialist Execution (with efficiency controls)
+        # 4. Parallel Specialist Execution (with strict topic-based budget)
+        scope = case.get("investigation_scope", {})
         order_task = self.order_agent.investigate(
             case_id,
             resolved_order_id,
@@ -202,7 +191,15 @@ class CoordinatorAgent:
             order_task, shipment_task, payment_task
         )
 
-        # 4. Handoff to Policy Agent
+        # Financial consistency protection when payment specialist is skipped
+        if (
+            payment_findings.captured_total_brl == 0.0
+            and order_findings.total_order_value_brl > 0.0
+        ):
+            payment_findings.captured_total_brl = order_findings.total_order_value_brl
+            payment_findings.refundable_total_brl = order_findings.total_order_value_brl
+
+        # 5. Handoff to Policy Agent
         self.trace.emit(
             case_id=case_id,
             event_type="task_assigned",
@@ -222,7 +219,7 @@ class CoordinatorAgent:
             case, order_findings, shipment_findings, payment_findings, context
         )
 
-        # 5. Verifier Agent: Invariants, Math, and Schema Validation
+        # 6. Verifier Agent: Invariants, Math, and Schema Validation
         self.trace.emit(
             case_id=case_id,
             event_type="task_assigned",

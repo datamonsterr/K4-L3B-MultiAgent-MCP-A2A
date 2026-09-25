@@ -477,3 +477,72 @@ def test_shipment_agent_milestone_event_reconciliation():
         assert "seller_1" in findings2.late_seller_ids
 
     asyncio.run(run())
+
+
+def test_entity_agent_resolution():
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from student_agent.pipeline.entity_agent import EntityAgent
+    from student_agent.pipeline.models import CaseEvidenceContext
+
+    async def run():
+        gw = MagicMock()
+        trace = MagicMock()
+        agent = EntityAgent(gw, trace)
+        context = CaseEvidenceContext("L3B_CASE_TEST")
+
+        case = {
+            "case_id": "L3B_CASE_TEST",
+            "customer_request": {
+                "claimed_order_id": "e481f51cbdc50e4277241dd38774797c",
+            },
+            "candidate_order_ids": [
+                "e481f51cbdc50e4277241dd38774797c",
+                "candidate-001",
+            ],
+            "customer_unique_id_hint": "customer-abc12345",
+        }
+
+        findings = await agent.resolve(case, context)
+        assert findings.resolved_order_id == "e481f51cbdc50e4277241dd38774797c"
+        assert findings.rejected_candidates == ["candidate-001"]
+        assert findings.customer_unique_id == "customer-abc12345"
+        assert findings.confidence == 0.96
+
+        # Check trace emission
+        trace_calls = [c[1]["event_type"] for c in trace.emit.call_args_list]
+        assert "task_assigned" in trace_calls
+        assert "handoff" in trace_calls
+
+    asyncio.run(run())
+
+
+def test_tool_gating_by_topic():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from student_agent.pipeline.models import ALLOWED_TOOLS_BY_TOPIC, CaseEvidenceContext
+
+    async def run():
+        allowed = ALLOWED_TOOLS_BY_TOPIC["late_delivery_seller"]
+        context = CaseEvidenceContext("L3B_CASE_TEST", allowed_tools=allowed)
+
+        # Allowed tool
+        assert context.is_tool_allowed("get_order") is True
+        assert context.is_tool_allowed("get_shipment_summary") is True
+
+        # Forbidden tool for late_delivery_seller
+        assert context.is_tool_allowed("get_order_payments") is False
+        assert context.is_tool_allowed("get_payment_timeline") is False
+
+        # Calling forbidden tool through call_tool returns empty data without querying gateway
+        gw = MagicMock()
+        gw.call = AsyncMock()
+        res = await context.call_tool(
+            gw, "get_order_payments", case_id="L3B_CASE_TEST", order_id="ord_01"
+        )
+        assert res.get("data") == {}
+        assert gw.call.call_count == 0
+
+    asyncio.run(run())

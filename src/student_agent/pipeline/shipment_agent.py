@@ -28,25 +28,16 @@ class ShipmentAgent:
         findings = ShipmentFindings(order_id=order_id, verdict="on_time")
 
         try:
-            cached_shipment = context.get_cached("get_shipment_summary", {"order_id": order_id})
-            if cached_shipment is None:
-                ship_ev = await self.gateway.call(
-                    "get_shipment_summary", case_id=case_id, order_id=order_id
-                )
-                context.set_cached("get_shipment_summary", {"order_id": order_id}, ship_ev)
-            else:
-                ship_ev = cached_shipment
-
+            ship_ev = await context.call_tool(
+                self.gateway,
+                "get_shipment_summary",
+                case_id=case_id,
+                trace=self.trace,
+                actor="shipment_agent",
+                order_id=order_id,
+            )
             ref = ship_ev["evidence_ref"]
             evidence_refs.append(ref)
-            self.trace.emit(
-                case_id=case_id,
-                event_type="tool_result_consumed",
-                actor="shipment_agent",
-                tool_name="get_shipment_summary",
-                evidence_refs=[ref],
-                attributes={"status": ship_ev["data"].get("order_status")},
-            )
             data = ship_ev["data"]
             carrier_at = data.get("delivered_carrier_at")
             customer_at = data.get("delivered_customer_at")
@@ -69,25 +60,26 @@ class ShipmentAgent:
                     confirmed_late_actor = ev.get("actor")
                     break
 
-            # 2. Extract late sellers
+            # 2. Extract late sellers ONLY if seller is the responsible actor
             late_sellers: list[str] = []
-            for limit in limits:
-                seller_id = limit.get("seller_id")
-                limit_at = limit.get("shipping_limit_at")
-                is_late_handoff = bool(carrier_at and limit_at and carrier_at > limit_at)
-                if (
-                    seller_id
-                    and seller_id not in late_sellers
-                    and (confirmed_late_actor == "seller" or is_late_handoff)
-                ):
-                    late_sellers.append(seller_id)
-
-            if not late_sellers and confirmed_late_actor == "seller":
+            if confirmed_late_actor != "logistics_provider":
                 for limit in limits:
-                    sid = limit.get("seller_id")
-                    if sid and sid not in late_sellers:
-                        late_sellers.append(sid)
-                        break
+                    seller_id = limit.get("seller_id")
+                    limit_at = limit.get("shipping_limit_at")
+                    is_late_handoff = bool(carrier_at and limit_at and carrier_at > limit_at)
+                    if (
+                        seller_id
+                        and seller_id not in late_sellers
+                        and (confirmed_late_actor == "seller" or is_late_handoff)
+                    ):
+                        late_sellers.append(seller_id)
+
+                if not late_sellers and confirmed_late_actor == "seller":
+                    for limit in limits:
+                        sid = limit.get("seller_id")
+                        if sid and sid not in late_sellers:
+                            late_sellers.append(sid)
+                            break
 
             findings.late_seller_ids = late_sellers
 
