@@ -24,15 +24,6 @@ def determine_required_investigations(case: dict[str, Any]) -> dict[str, bool]:
     message = case.get("customer_request", {}).get("message", "").lower()
 
     delivery_topics = {"late_delivery_seller", "late_delivery_logistics"}
-    payment_topics = {
-        "valid_split_payment",
-        "duplicate_charge",
-        "payment_mismatch",
-        "canceled_order_paid",
-        "unavailable_order_paid",
-        "refund_pending",
-        "refund_failed",
-    }
 
     is_delivery_dispute = bool(topics & delivery_topics) or (
         "unsupported_claim" in topics
@@ -40,18 +31,12 @@ def determine_required_investigations(case: dict[str, Any]) -> dict[str, bool]:
             w in message for w in ["giao", "ship", "vận chuyển", "nhận hàng", "delivery", "late"]
         )
     )
-    is_payment_dispute = bool(topics & payment_topics) or (
-        "unsupported_claim" in topics
-        and any(w in message for w in ["thanh toán", "tiền", "charge", "refund", "trả"])
-    )
 
-    needs_shipment = is_delivery_dispute or (not is_payment_dispute)
+    needs_shipment = is_delivery_dispute or ("unsupported_claim" in topics)
     needs_order = True
-    needs_items = (
-        is_delivery_dispute or ("payment_mismatch" in topics) or ("canceled_order_paid" in topics)
-    )
-    needs_sellers = "late_delivery_seller" in topics
-    needs_payment_rows = is_payment_dispute
+    needs_items = True
+    needs_payment_rows = True
+    needs_sellers = bool(scope.get("include_seller_locations", False))
     needs_payment_timeline = bool(topics & {"duplicate_charge", "payment_mismatch"})
     needs_refund_timeline = bool(topics & {"refund_pending", "refund_failed"})
     needs_product_context = bool(

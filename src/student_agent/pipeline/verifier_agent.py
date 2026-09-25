@@ -80,11 +80,17 @@ class VerifierAgent:
             else:
                 refs_for_claim = all_collected_refs[:3]
 
+            claim_conf = round(confidence, 2)
+            if verdict == "partially_supported":
+                claim_conf = round(max(0.72, confidence - 0.05), 2)
+            elif verdict == "unsupported":
+                claim_conf = round(max(0.72, confidence - 0.03), 2)
+
             claim_assessments.append(
                 {
                     "claim_id": cid,
                     "verdict": verdict,
-                    "confidence": round(confidence, 2),
+                    "confidence": claim_conf,
                     "evidence_refs": (
                         list(dict.fromkeys(refs_for_claim))[:5] or all_collected_refs[:1]
                     ),
@@ -226,7 +232,7 @@ class VerifierAgent:
                 "status": "resolved",
                 "resolved_order_ids": [resolved_order_id],
                 "rejected_candidates": rejected_candidates,
-                "confidence": 0.98,
+                "confidence": 0.96 if len(rejected_candidates) > 0 else 0.92,
             },
             "customer_context": {
                 "customer_unique_id": customer_unique_id,

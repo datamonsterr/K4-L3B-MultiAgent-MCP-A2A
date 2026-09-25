@@ -53,19 +53,26 @@ class PaymentAgent:
                 )
                 payments_data = pay_ev["data"]
                 findings.payments = payments_data
+                seq_counts: dict[str, int] = {}
                 for idx, p in enumerate(payments_data):
-                    val = float(p.get("payment_value", 0.0))
+                    val = float(p.get("payment_value", 0.0) or 0.0)
                     findings.captured_total_brl += val
-                    seq = p.get("payment_sequential", idx + 1)
+                    seq = str(p.get("payment_sequential", idx + 1))
+                    ptype = str(p.get("payment_type", ""))
                     findings.payment_references.append(f"pay_{order_id[:8]}_{seq}_{idx + 1}")
+                    key = f"{seq}_{ptype}_{val}"
+                    seq_counts[key] = seq_counts.get(key, 0) + 1
+                    if seq_counts[key] > 1:
+                        findings.has_duplicate_capture = True
             except Exception:
                 pass
 
-        # 2. get_payment_timeline (only for duplicate charges or reconciliation mismatches)
+        # 2. get_payment_timeline (only for duplicate charges or reconciliation
+        # mismatches, or if cached)
         timeline_events: list[dict[str, Any]] = []
-        if needs_payment_timeline:
+        cached_pt = context.get_cached("get_payment_timeline", {"order_id": order_id})
+        if needs_payment_timeline or cached_pt is not None:
             try:
-                cached_pt = context.get_cached("get_payment_timeline", {"order_id": order_id})
                 if cached_pt is None:
                     pt_ev = await self.gateway.call(
                         "get_payment_timeline", case_id=case_id, order_id=order_id
@@ -108,11 +115,11 @@ class PaymentAgent:
             except Exception:
                 pass
 
-        # 3. get_refund_timeline (only for pending or failed refund issues)
+        # 3. get_refund_timeline (only for pending or failed refund issues, or if cached)
         refund_events: list[dict[str, Any]] = []
-        if needs_refund_timeline:
+        cached_rt = context.get_cached("get_refund_timeline", {"order_id": order_id})
+        if needs_refund_timeline or cached_rt is not None:
             try:
-                cached_rt = context.get_cached("get_refund_timeline", {"order_id": order_id})
                 if cached_rt is None:
                     rt_ev = await self.gateway.call(
                         "get_refund_timeline", case_id=case_id, order_id=order_id

@@ -52,6 +52,7 @@ class ShipmentAgent:
             customer_at = data.get("delivered_customer_at")
             estimated_at = data.get("estimated_delivery_at")
             limits = data.get("shipping_limits") or []
+            events = data.get("events") or []
 
             findings.delivered_carrier_at = carrier_at
             findings.delivered_customer_at = customer_at
@@ -61,32 +62,49 @@ class ShipmentAgent:
             ship_id = data.get("shipment_id") or f"shipment-{order_id[:12]}"
             findings.shipment_ids = [ship_id]
 
-            # Evaluate seller handoff vs shipping limits
+            # 1. Inspect authoritative confirmed milestone events
+            confirmed_late_actor = None
+            for ev in events:
+                if ev.get("event_type") == "delivered_late" and ev.get("status") == "confirmed":
+                    confirmed_late_actor = ev.get("actor")
+                    break
+
+            # 2. Extract late sellers
             late_sellers: list[str] = []
             for limit in limits:
-                limit_at = limit.get("shipping_limit_at")
                 seller_id = limit.get("seller_id")
+                limit_at = limit.get("shipping_limit_at")
+                is_late_handoff = bool(carrier_at and limit_at and carrier_at > limit_at)
                 if (
-                    carrier_at
-                    and limit_at
-                    and carrier_at > limit_at
-                    and seller_id
+                    seller_id
                     and seller_id not in late_sellers
+                    and (confirmed_late_actor == "seller" or is_late_handoff)
                 ):
                     late_sellers.append(seller_id)
 
+            if not late_sellers and confirmed_late_actor == "seller":
+                for limit in limits:
+                    sid = limit.get("seller_id")
+                    if sid and sid not in late_sellers:
+                        late_sellers.append(sid)
+                        break
+
             findings.late_seller_ids = late_sellers
-            findings.is_seller_delay = len(late_sellers) > 0
 
-            # Evaluate logistics carrier delivery vs estimated delivery date
-            if customer_at and estimated_at and customer_at > estimated_at:
-                findings.is_logistics_delay = True
-
-            # Determine shipment verdict
-            if findings.is_seller_delay:
+            # 3. Determine shipment verdict
+            if confirmed_late_actor == "seller":
+                findings.is_seller_delay = True
                 findings.verdict = "seller_delay"
-            elif findings.is_logistics_delay:
+            elif confirmed_late_actor == "logistics_provider":
+                findings.is_logistics_delay = True
                 findings.verdict = "logistics_delay"
+            elif customer_at and estimated_at and customer_at > estimated_at:
+                if findings.late_seller_ids:
+                    findings.is_seller_delay = True
+                    findings.verdict = "seller_delay"
+                else:
+                    findings.is_logistics_delay = True
+                    findings.verdict = "logistics_delay"
             elif customer_at:
                 findings.verdict = "on_time"
             else:

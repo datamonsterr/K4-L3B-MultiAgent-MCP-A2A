@@ -146,10 +146,10 @@ class OrderAgent:
             except Exception:
                 pass
 
-        # 3. get_sellers (only if seller identification is required and not present)
-        if needs_sellers and not findings.seller_ids:
+        # 3. get_sellers (only if seller identification is required and not present, or if cached)
+        cached_sellers = context.get_cached("get_sellers", {"order_id": order_id})
+        if (needs_sellers and not findings.seller_ids) or cached_sellers is not None:
             try:
-                cached_sellers = context.get_cached("get_sellers", {"order_id": order_id})
                 if cached_sellers is None:
                     sellers_ev = await self.gateway.call(
                         "get_sellers", case_id=case_id, order_id=order_id
@@ -182,8 +182,12 @@ class OrderAgent:
             except Exception:
                 pass
 
-        # 4. get_product_context (only when explicitly needed by catalog/product scope)
-        if needs_product_context and scope.get("include_product_context", True):
+        # 4. get_product_context (only when explicitly needed by catalog/product scope,
+        # or if cached)
+        cached_prod = context.get_cached("get_product_context", {"order_id": order_id})
+        if (needs_product_context or cached_prod is not None) and scope.get(
+            "include_product_context", True
+        ):
             try:
                 cached_prod = context.get_cached("get_product_context", {"order_id": order_id})
                 if cached_prod is None:

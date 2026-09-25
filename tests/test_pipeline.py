@@ -417,3 +417,63 @@ def test_order_agent_skips_get_sellers_when_items_present():
         assert "get_sellers" not in called_tools
 
     asyncio.run(run())
+
+
+def test_shipment_agent_milestone_event_reconciliation():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from student_agent.pipeline.shipment_agent import ShipmentAgent
+
+    async def run():
+        gw = MagicMock()
+        trace = MagicMock()
+        agent = ShipmentAgent(gw, trace)
+        context = CaseEvidenceContext("L3B_CASE_TEST")
+
+        # Telemetry with confirmed logistics_provider delay event
+        ship_ev_logistics = {
+            "evidence_ref": "ev_ship_12345678901234567890",
+            "data": {
+                "delivered_carrier_at": "2018-05-13T09:00:00-03:00",
+                "delivered_customer_at": "2018-05-20T09:00:00-03:00",
+                "estimated_delivery_at": "2018-05-21T09:00:00-03:00",
+                "shipping_limits": [
+                    {"seller_id": "seller_1", "shipping_limit_at": "2018-05-14T09:00:00-03:00"}
+                ],
+                "events": [
+                    {
+                        "event_type": "delivered_late",
+                        "actor": "logistics_provider",
+                        "status": "confirmed",
+                    }
+                ],
+            },
+        }
+        gw.call = AsyncMock(return_value=ship_ev_logistics)
+        findings = await agent.investigate("L3B_CASE_TEST", "ord_01", context)
+        assert findings.verdict == "logistics_delay"
+        assert findings.is_logistics_delay is True
+
+        # Telemetry with confirmed seller delay event
+        ship_ev_seller = {
+            "evidence_ref": "ev_ship_22345678901234567890",
+            "data": {
+                "delivered_carrier_at": "2018-05-15T09:00:00-03:00",
+                "delivered_customer_at": "2018-05-22T09:00:00-03:00",
+                "estimated_delivery_at": "2018-05-21T09:00:00-03:00",
+                "shipping_limits": [
+                    {"seller_id": "seller_1", "shipping_limit_at": "2018-05-14T09:00:00-03:00"}
+                ],
+                "events": [
+                    {"event_type": "delivered_late", "actor": "seller", "status": "confirmed"}
+                ],
+            },
+        }
+        gw.call = AsyncMock(return_value=ship_ev_seller)
+        findings2 = await agent.investigate("L3B_CASE_TEST", "ord_02", context)
+        assert findings2.verdict == "seller_delay"
+        assert findings2.is_seller_delay is True
+        assert "seller_1" in findings2.late_seller_ids
+
+    asyncio.run(run())
