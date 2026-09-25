@@ -44,15 +44,82 @@ class A2AMessage:
         )
 
 
+ALLOWED_TOOLS_BY_TOPIC: dict[str, set[str]] = {
+    "late_delivery_seller": {
+        "get_order",
+        "get_shipment_summary",
+        "get_order_items",
+        "get_sellers",
+        "get_policy",
+    },
+    "late_delivery_logistics": {
+        "get_order",
+        "get_shipment_summary",
+        "get_order_items",
+        "get_policy",
+    },
+    "valid_split_payment": {
+        "get_order",
+        "get_order_payments",
+        "get_policy",
+    },
+    "duplicate_charge": {
+        "get_order",
+        "get_order_payments",
+        "get_payment_timeline",
+        "get_policy",
+    },
+    "payment_mismatch": {
+        "get_order",
+        "get_order_payments",
+        "get_order_items",
+        "get_payment_timeline",
+        "get_policy",
+    },
+    "refund_pending": {
+        "get_order",
+        "get_order_payments",
+        "get_refund_timeline",
+        "get_policy",
+    },
+    "refund_failed": {
+        "get_order",
+        "get_order_payments",
+        "get_refund_timeline",
+        "get_policy",
+    },
+    "canceled_order_paid": {
+        "get_order",
+        "get_order_payments",
+        "get_policy",
+    },
+    "unavailable_order_paid": {
+        "get_order",
+        "get_order_payments",
+        "get_policy",
+    },
+    "unsupported_claim": {
+        "get_order",
+        "get_policy",
+    },
+}
+
+
 class CaseEvidenceContext:
     """Session-scoped evidence repository for a single dispute case."""
 
-    def __init__(self, case_id: str) -> None:
+    def __init__(self, case_id: str, allowed_tools: set[str] | None = None) -> None:
         self.case_id = case_id
+        self.allowed_tools = set(allowed_tools) if allowed_tools is not None else None
         self.evidence_by_tool: dict[str, list[dict[str, Any]]] = {}
         self.evidence_by_domain: dict[str, list[str]] = {}
         self.collected_evidence_refs: list[str] = []
         self._cache: dict[str, dict[str, Any]] = {}
+
+    def is_tool_allowed(self, tool_name: str) -> bool:
+        if self.allowed_tools is None:
+            return True
+        return tool_name in self.allowed_tools
 
     def record_evidence(self, tool_name: str, evidence: dict[str, Any]) -> None:
         ref = evidence.get("evidence_ref")
@@ -105,6 +172,43 @@ class CaseEvidenceContext:
         key = self.get_cache_key(tool_name, arguments)
         self._cache[key] = evidence
         self.record_evidence(tool_name, evidence)
+
+    async def call_tool(
+        self,
+        gateway: Any,
+        tool_name: str,
+        *,
+        case_id: str,
+        trace: Any = None,
+        actor: str = "specialist",
+        trace_attrs: dict[str, Any] | None = None,
+        **arguments: Any,
+    ) -> dict[str, Any]:
+        """Fetch MCP tool evidence with transparent case-scoped caching and trace emission."""
+        if not self.is_tool_allowed(tool_name):
+            return {"data": {}, "warnings": [f"tool {tool_name} not allowed for topic scope"]}
+
+        key = self.get_cache_key(tool_name, arguments)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+
+        evidence = await gateway.call(tool_name, case_id=case_id, **arguments)
+        self._cache[key] = evidence
+        self.record_evidence(tool_name, evidence)
+
+        ref = evidence.get("evidence_ref")
+        if trace and ref:
+            attrs = dict(trace_attrs or {})
+            trace.emit(
+                case_id=case_id,
+                event_type="tool_result_consumed",
+                actor=actor,
+                tool_name=tool_name,
+                evidence_refs=[ref],
+                attributes=attrs,
+            )
+        return evidence
 
 
 class OrderFindings(BaseModel):

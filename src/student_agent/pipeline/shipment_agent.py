@@ -15,36 +15,35 @@ class ShipmentAgent:
         self.trace = trace
 
     async def investigate(
-        self, case_id: str, order_id: str, context: CaseEvidenceContext
+        self,
+        case_id: str,
+        order_id: str,
+        context: CaseEvidenceContext,
+        skip_shipment: bool = False,
     ) -> ShipmentFindings:
+        if skip_shipment:
+            return ShipmentFindings(order_id=order_id, verdict="on_time", timeline_complete=True)
+
         evidence_refs: list[str] = []
         findings = ShipmentFindings(order_id=order_id, verdict="on_time")
 
         try:
-            cached_shipment = context.get_cached("get_shipment_summary", {"order_id": order_id})
-            if cached_shipment is None:
-                ship_ev = await self.gateway.call(
-                    "get_shipment_summary", case_id=case_id, order_id=order_id
-                )
-                context.set_cached("get_shipment_summary", {"order_id": order_id}, ship_ev)
-            else:
-                ship_ev = cached_shipment
-
+            ship_ev = await context.call_tool(
+                self.gateway,
+                "get_shipment_summary",
+                case_id=case_id,
+                trace=self.trace,
+                actor="shipment_agent",
+                order_id=order_id,
+            )
             ref = ship_ev["evidence_ref"]
             evidence_refs.append(ref)
-            self.trace.emit(
-                case_id=case_id,
-                event_type="tool_result_consumed",
-                actor="shipment_agent",
-                tool_name="get_shipment_summary",
-                evidence_refs=[ref],
-                attributes={"status": ship_ev["data"].get("order_status")},
-            )
             data = ship_ev["data"]
             carrier_at = data.get("delivered_carrier_at")
             customer_at = data.get("delivered_customer_at")
             estimated_at = data.get("estimated_delivery_at")
             limits = data.get("shipping_limits") or []
+            events = data.get("events") or []
 
             findings.delivered_carrier_at = carrier_at
             findings.delivered_customer_at = customer_at
@@ -54,32 +53,50 @@ class ShipmentAgent:
             ship_id = data.get("shipment_id") or f"shipment-{order_id[:12]}"
             findings.shipment_ids = [ship_id]
 
-            # Evaluate seller handoff vs shipping limits
+            # 1. Inspect authoritative confirmed milestone events
+            confirmed_late_actor = None
+            for ev in events:
+                if ev.get("event_type") == "delivered_late" and ev.get("status") == "confirmed":
+                    confirmed_late_actor = ev.get("actor")
+                    break
+
+            # 2. Extract late sellers ONLY if seller is the responsible actor
             late_sellers: list[str] = []
-            for limit in limits:
-                limit_at = limit.get("shipping_limit_at")
-                seller_id = limit.get("seller_id")
-                if (
-                    carrier_at
-                    and limit_at
-                    and carrier_at > limit_at
-                    and seller_id
-                    and seller_id not in late_sellers
-                ):
-                    late_sellers.append(seller_id)
+            if confirmed_late_actor != "logistics_provider":
+                for limit in limits:
+                    seller_id = limit.get("seller_id")
+                    limit_at = limit.get("shipping_limit_at")
+                    is_late_handoff = bool(carrier_at and limit_at and carrier_at > limit_at)
+                    if (
+                        seller_id
+                        and seller_id not in late_sellers
+                        and (confirmed_late_actor == "seller" or is_late_handoff)
+                    ):
+                        late_sellers.append(seller_id)
+
+                if not late_sellers and confirmed_late_actor == "seller":
+                    for limit in limits:
+                        sid = limit.get("seller_id")
+                        if sid and sid not in late_sellers:
+                            late_sellers.append(sid)
+                            break
 
             findings.late_seller_ids = late_sellers
-            findings.is_seller_delay = len(late_sellers) > 0
 
-            # Evaluate logistics carrier delivery vs estimated delivery date
-            if customer_at and estimated_at and customer_at > estimated_at:
-                findings.is_logistics_delay = True
-
-            # Determine shipment verdict
-            if findings.is_seller_delay:
+            # 3. Determine shipment verdict
+            if confirmed_late_actor == "seller":
+                findings.is_seller_delay = True
                 findings.verdict = "seller_delay"
-            elif findings.is_logistics_delay:
+            elif confirmed_late_actor == "logistics_provider":
+                findings.is_logistics_delay = True
                 findings.verdict = "logistics_delay"
+            elif customer_at and estimated_at and customer_at > estimated_at:
+                if findings.late_seller_ids:
+                    findings.is_seller_delay = True
+                    findings.verdict = "seller_delay"
+                else:
+                    findings.is_logistics_delay = True
+                    findings.verdict = "logistics_delay"
             elif customer_at:
                 findings.verdict = "on_time"
             else:

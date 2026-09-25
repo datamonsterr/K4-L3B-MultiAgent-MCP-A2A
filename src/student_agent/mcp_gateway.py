@@ -34,13 +34,7 @@ class EvidenceGateway:
                         block.text for block in result.content if getattr(block, "text", None)
                     )
                     err_msg = f"MCP tool {tool_name} failed: {msg_text or 'unknown error'}"
-                    if tool_name == "get_refund_timeline":
-                        raise RuntimeError(err_msg)
-                    last_error = RuntimeError(err_msg)
-                    if attempt < 2:
-                        await asyncio.sleep(0.5 * (attempt + 1))
-                        continue
-                    raise last_error
+                    raise RuntimeError(err_msg)
                 evidence = getattr(result, "structuredContent", None)
                 if evidence is None:
                     evidence = getattr(result, "structured_content", None)
@@ -53,9 +47,9 @@ class EvidenceGateway:
                     evidence = json.loads(text_blocks[0])
                 self._contracts.validate_evidence(evidence, f"MCP tool {tool_name}")
                 return evidence
+            except RuntimeError:
+                raise
             except Exception as exc:
-                if tool_name == "get_refund_timeline":
-                    raise
                 last_error = exc
                 if attempt < 2:
                     await asyncio.sleep(0.5 * (attempt + 1))

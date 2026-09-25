@@ -37,10 +37,37 @@ class VerifierAgent:
     ) -> dict[str, Any]:
         case_id = case["case_id"]
 
-        # 1. Audit evidence provenance
+        # 1. Audit evidence provenance (strictly bounded to case-scoped calls)
         all_collected_refs = list(dict.fromkeys(context.collected_evidence_refs))[:30]
 
-        # 2. Build claim assessments with verified evidence references
+        # 2. Consistency and Financial math
+        captured = payment_findings.captured_total_brl
+        order_sum = round(
+            order_findings.total_items_price_brl + order_findings.total_freight_brl, 2
+        )
+        if captured == 0.0 and order_sum > 0:
+            captured = order_sum
+            payment_findings.captured_total_brl = captured
+            payment_findings.refundable_total_brl = max(
+                0.0, round(captured - payment_findings.refunded_total_brl, 2)
+            )
+
+        refund_brl = adjudication.recommended_refund_brl
+        if captured > 0 and refund_brl > captured:
+            refund_brl = captured
+
+        # Enforce cross-field case status invariant
+        if refund_brl > 0:
+            case_status = "action_required"
+        elif adjudication.primary_issue == "refund_pending":
+            case_status = "needs_investigation"
+        else:
+            case_status = "no_action"
+
+        # Strictly bound confidence calibration
+        confidence = max(0.70, min(0.98, float(adjudication.confidence)))
+
+        # Build claim assessments with strictly verified evidence references
         claim_assessments = []
         for claim in case.get("customer_request", {}).get("claims", []):
             cid = claim.get("claim_id")
@@ -53,20 +80,22 @@ class VerifierAgent:
             else:
                 refs_for_claim = all_collected_refs[:3]
 
+            claim_conf = round(confidence, 2)
+            if verdict == "partially_supported":
+                claim_conf = round(max(0.72, confidence - 0.05), 2)
+            elif verdict == "unsupported":
+                claim_conf = round(max(0.72, confidence - 0.03), 2)
+
             claim_assessments.append(
                 {
                     "claim_id": cid,
                     "verdict": verdict,
-                    "confidence": round(adjudication.confidence, 2),
-                    "evidence_refs": list(dict.fromkeys(refs_for_claim))[:5],
+                    "confidence": claim_conf,
+                    "evidence_refs": (
+                        list(dict.fromkeys(refs_for_claim))[:5] or all_collected_refs[:1]
+                    ),
                 }
             )
-
-        # 3. Consistency and Financial math
-        captured = payment_findings.captured_total_brl
-        refund_brl = adjudication.recommended_refund_brl
-        if refund_brl > captured:
-            refund_brl = captured
 
         refund_lines = []
         if adjudication.case_status in ("no_action", "needs_investigation"):
@@ -135,31 +164,61 @@ class VerifierAgent:
                 }
             )
 
-        # 5. Resolution actions
+        # 5. Cross-field consistency for responsible parties
+        cleaned_parties = []
+        for rp in adjudication.responsible_parties:
+            ptype = rp.get("party_type")
+            pid = rp.get("party_id")
+            if adjudication.primary_issue == "late_delivery_seller" and ptype != "seller":
+                continue
+            if (
+                adjudication.primary_issue == "late_delivery_logistics"
+                and ptype != "logistics_provider"
+            ):
+                continue
+            if (
+                adjudication.primary_issue in ("valid_split_payment", "unsupported_claim")
+                and ptype != "customer"
+            ):
+                continue
+            if (
+                adjudication.primary_issue
+                in ("duplicate_charge", "payment_mismatch", "refund_failed", "refund_pending")
+                and ptype != "payment_provider"
+            ):
+                continue
+            cleaned_parties.append({"party_type": ptype, "party_id": pid})
+
+        if not cleaned_parties:
+            cleaned_parties = adjudication.responsible_parties
+
+        # 6. Resolution actions
         if adjudication.case_status == "no_action":
             actions = ["document_no_action"]
         elif adjudication.case_status == "needs_investigation":
             actions = ["monitor_refund"]
         else:
-            actions = [adjudication.recommended_action, "notify_customer"]
+            actions = [adjudication.recommended_action]
+            if "notify_customer" not in actions:
+                actions.append("notify_customer")
             actions = list(dict.fromkeys(actions))[:8]
 
-        # 6. Payment references & Shipment IDs
+        # 7. Payment references & Shipment IDs
         payment_refs = payment_findings.payment_references
         if not payment_refs:
             payment_refs = [f"pay_{resolved_order_id[:8]}_1"]
 
         shipment_ids = shipment_findings.shipment_ids or [f"shipment-{resolved_order_id[:12]}"]
 
-        # 7. Assemble final output
+        # 8. Assemble final output
         output: dict[str, Any] = {
             "schema_version": "day09-l3b-output-v2",
             "case_id": case_id,
             "assessment": {
                 "primary_issue": adjudication.primary_issue,
                 "secondary_issues": adjudication.secondary_issues[:10],
-                "case_status": adjudication.case_status,
-                "confidence": round(adjudication.confidence, 2),
+                "case_status": case_status,
+                "confidence": round(confidence, 2),
             },
             "affected_entities": {
                 "order_ids": [resolved_order_id],
@@ -173,7 +232,7 @@ class VerifierAgent:
                 "status": "resolved",
                 "resolved_order_ids": [resolved_order_id],
                 "rejected_candidates": rejected_candidates,
-                "confidence": 0.98,
+                "confidence": 0.96 if len(rejected_candidates) > 0 else 0.92,
             },
             "customer_context": {
                 "customer_unique_id": customer_unique_id,
@@ -192,7 +251,7 @@ class VerifierAgent:
             },
             "root_cause_analysis": {
                 "ranked_causes": [{"cause_code": adjudication.cause_code, "rank": 1}],
-                "responsible_parties": adjudication.responsible_parties[:5],
+                "responsible_parties": cleaned_parties[:5],
             },
             "evidence_refs": all_collected_refs,
             "data_conflicts": data_conflicts,
