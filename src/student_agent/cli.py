@@ -70,6 +70,8 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("validate", help="validate outputs and observable trace")
     package = commands.add_parser("package", help="validate and build the submission ZIP")
     package.add_argument("--output", default="dist/submission.zip")
+    ui_cmd = commands.add_parser("ui", help="launch Streamlit multiagent chatbot UI")
+    ui_cmd.add_argument("--port", type=int, default=8501, help="port to run Streamlit on")
     return result
 
 
@@ -94,6 +96,22 @@ def main() -> None:
         elif args.command == "package":
             destination = package_submission(root, root / args.output)
             print(f"OK: {destination}")
+        elif args.command == "ui":
+            import subprocess
+
+            app_path = Path(__file__).parent / "ui" / "app.py"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "streamlit",
+                    "run",
+                    str(app_path),
+                    "--server.port",
+                    str(args.port),
+                ],
+                check=True,
+            )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
