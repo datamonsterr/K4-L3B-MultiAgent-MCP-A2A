@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import streamlit as st
 
-from .chat_engine import DisputeChatEngine
-from .components import format_trace_events_for_display, render_multiagent_flow
-from .styles import get_custom_css
+# Ensure src root is in sys.path when executed directly by Streamlit
+_src_root = Path(__file__).resolve().parent.parent.parent
+if str(_src_root) not in sys.path:
+    sys.path.insert(0, str(_src_root))
+
+from student_agent.ui.chat_engine import DisputeChatEngine  # noqa: E402
+from student_agent.ui.components import (  # noqa: E402
+    format_trace_events_for_display,
+    render_multiagent_flow,
+)
+from student_agent.ui.styles import get_custom_css  # noqa: E402
 
 
 def init_session_state(session: dict) -> None:
