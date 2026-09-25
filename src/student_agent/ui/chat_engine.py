@@ -103,13 +103,7 @@ class DisputeChatEngine:
             sample_str = ", ".join(f"`{c}`" for c in sample_cases)
             return {
                 "case_id": None,
-                "reply": (
-                    "Hello! I am your Multi-Agent Dispute Investigation Chatbot.\n\n"
-                    f"Please enter or select a case ID to investigate (e.g. {sample_str}). "
-                    "I will orchestrate the Coordinator, parallel specialists "
-                    "(Order, Shipment, Payment), Policy conflict resolution, "
-                    "and invariant verification."
-                ),
+                "reply": f"Enter case ID (e.g. {sample_str}).",
                 "process": None,
                 "raw_traces": [],
             }
@@ -130,10 +124,8 @@ class DisputeChatEngine:
                 return {
                     "case_id": target_case_id,
                     "reply": (
-                        f"**Shipment Specialist Report for `{target_case_id}`**:\n"
-                        f"- Tools called: {tools_str}\n"
-                        f"- Summary: {process.shipment_agent.summary}\n"
-                        "- Decision impact: Evaluated carrier delivery timelines against SLA."
+                        f"**Shipment (`{target_case_id}`)**: Tools: {tools_str} | "
+                        f"{process.shipment_agent.summary}"
                     ),
                     "process": process,
                     "raw_traces": trace_data,
@@ -147,11 +139,8 @@ class DisputeChatEngine:
                 return {
                     "case_id": target_case_id,
                     "reply": (
-                        f"**Payment Specialist Report for `{target_case_id}`**:\n"
-                        f"- Tools called: {tools_str}\n"
-                        f"- Refund amount: {refund_str}\n"
-                        f"- Responsible party: `{party_val}`\n"
-                        f"- Summary: {process.payment_agent.summary}"
+                        f"**Payment (`{target_case_id}`)**: Tools: {tools_str} | "
+                        f"Refund: {refund_str} | Party: `{party_val}`"
                     ),
                     "process": process,
                     "raw_traces": trace_data,
@@ -162,10 +151,8 @@ class DisputeChatEngine:
                 return {
                     "case_id": target_case_id,
                     "reply": (
-                        f"**Order / Product Specialist Report for `{target_case_id}`**:\n"
-                        f"- Resolved Order ID: `{process.coordinator.resolved_order_id}`\n"
-                        f"- Tools called: {tools_str}\n"
-                        f"- Summary: {process.order_agent.summary}"
+                        f"**Order (`{target_case_id}`)**: "
+                        f"Order `{process.coordinator.resolved_order_id}` | Tools: {tools_str}"
                     ),
                     "process": process,
                     "raw_traces": trace_data,
@@ -184,21 +171,12 @@ class DisputeChatEngine:
             if process.policy_agent.refund_amount is not None
             else "None"
         )
-        rationale = (
-            process.policy_agent.rationale
-            or "Adjudicated by platform policy based on parallel specialist evidence."
-        )
 
         reply_md = (
-            f"### Investigation Result for `{target_case_id}`\n\n"
-            f'- **Customer Claim**: "{process.customer_message}"\n'
-            f"- **Entity Resolution**: Claimed order `{process.coordinator.claimed_order_id}` "
-            f"resolved to `{process.coordinator.resolved_order_id}`.\n"
-            f"- **Decision**: `{decision}` (Responsible: `{party}`)\n"
-            f"- **Refund Amount**: {refund} | **Confidence**: {conf}\n"
-            f"- **Rationale**: {rationale}\n\n"
-            "Full multi-agent execution pipeline details with parallel specialist MCP calls "
-            "and verifiable evidence references are shown below."
+            f"**`{target_case_id}`** | Decision: `{decision}` (Party: `{party}`) | "
+            f"Refund: {refund} | Conf: {conf}\n\n"
+            f'Claim: "{process.customer_message}"\n'
+            f"Resolved Order: `{process.coordinator.resolved_order_id}`"
         )
 
         return {

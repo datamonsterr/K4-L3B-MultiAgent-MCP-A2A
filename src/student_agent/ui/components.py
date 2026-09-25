@@ -89,109 +89,87 @@ def render_multiagent_flow(st_module: Any, process: MultiAgentProcess) -> None:
     """Render the full process: Coordinator -> Parallel Specialists -> Policy -> Verifier."""
 
     # 1. Coordinator Step
-    with st_module.expander("📍 Phase 1: Coordinator & Entity Resolution", expanded=True):
+    with st_module.expander("1. Coordinator", expanded=True):
         st_module.markdown(
-            render_agent_badge_html("coordinator", "Supervisor & Router"),
+            render_agent_badge_html("coordinator", "Coordinator"),
             unsafe_allow_html=True,
         )
         c = process.coordinator
         rej_list = [f"<code>{escape(cand)}</code>" for cand in c.rejected_candidates]
         rej_str = ", ".join(rej_list) if rej_list else "None"
         st_module.markdown(
-            f'<div style="margin-top: 6px; font-size: 12px; line-height: 1.4;">'
-            f"• <b>Claimed Order ID</b>: <code>{escape(str(c.claimed_order_id))}</code><br>"
-            f"• <b>Resolved Order ID</b>: <code>{escape(str(c.resolved_order_id))}</code><br>"
-            f"• <b>Rejected Candidates</b>: {rej_str}<br>"
-            f"• <b>Customer Hint</b>: <code>{escape(str(c.customer_hint or 'None'))}</code>"
+            f'<div style="margin-top: 4px; font-size: 11.5px; line-height: 1.4;">'
+            f"Claimed: <code>{escape(str(c.claimed_order_id))}</code> | "
+            f"Resolved: <code>{escape(str(c.resolved_order_id))}</code> | "
+            f"Rejected: {rej_str}"
             f"</div>",
             unsafe_allow_html=True,
         )
         if c.tool_calls:
-            st_module.markdown(
-                '<div style="font-size: 11px; font-weight: 600; color: #475569; '
-                'margin-top: 6px;">Coordinator MCP Evidence Calls:</div>',
-                unsafe_allow_html=True,
-            )
             for tool in c.tool_calls:
                 st_module.markdown(render_tool_call_html(tool), unsafe_allow_html=True)
 
     # 2. Async Parallel Specialists (MUST show parallel)
-    with st_module.expander("⚡ Phase 2: Async Parallel Specialists Execution", expanded=True):
-        concurrent_badge = (
-            '<span style="padding: 1px 7px; border-radius: 50px; background: #DCFCE7; '
-            'color: #15803D; font-size: 10.5px; font-weight: 600;">Concurrent</span>'
-        )
-        st_module.markdown(
-            f'<div style="display:flex; align-items:center; gap: 8px; margin-bottom: 8px;">'
-            f'<span style="font-size: 12px; font-weight: 600; color: #1E293B;">'
-            f"Parallel Specialist Lanes (asyncio.gather)</span>"
-            f"{concurrent_badge}"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+    with st_module.expander("2. Parallel Specialists", expanded=True):
         col1, col2, col3 = st_module.columns(3)
         with col1:
-            render_specialist_lane(st_module, process.order_agent, "Order & Catalog")
+            render_specialist_lane(st_module, process.order_agent, "Order")
         with col2:
-            render_specialist_lane(st_module, process.shipment_agent, "Logistics & Tracking")
+            render_specialist_lane(st_module, process.shipment_agent, "Shipment")
         with col3:
-            render_specialist_lane(st_module, process.payment_agent, "Payments & Refunds")
+            render_specialist_lane(st_module, process.payment_agent, "Payment")
 
     # 3. Policy & Conflict Resolution
-    with st_module.expander("⚖️ Phase 3: Policy & Conflict Adjudication", expanded=True):
+    with st_module.expander("3. Policy", expanded=True):
         st_module.markdown(
-            render_agent_badge_html("policy_agent", "Conflict Resolver"),
+            render_agent_badge_html("policy_agent", "Policy"),
             unsafe_allow_html=True,
         )
         p = process.policy_agent
-        refund_disp = f"${p.refund_amount:.2f}" if p.refund_amount is not None else "No refund"
+        refund_disp = f"${p.refund_amount:.2f}" if p.refund_amount is not None else "None"
         conf_disp = f"{p.confidence * 100:.1f}%" if p.confidence else "N/A"
         dec_span = f'<span style="font-weight:600; color:#1D4ED8;">{escape(str(p.decision))}</span>'
         party_str = escape(str(p.responsible_party or "platform"))
-        rat_str = escape(str(p.rationale or "Adjudicated against dispute guidelines."))
+        rat_str = escape(str(p.rationale or ""))
+        rat_html = f"<br>Rationale: {rat_str}" if rat_str else ""
         st_module.markdown(
-            f'<div style="margin-top: 6px; font-size: 12px; line-height: 1.4;">'
-            f"• <b>Decision</b>: {dec_span} (Responsible: <b>{party_str}</b>)<br>"
-            f"• <b>Refund Amount</b>: <b>{refund_disp}</b> | <b>Confidence</b>: {conf_disp}<br>"
-            f"• <b>Policy Rationale</b>: {rat_str}"
+            f'<div style="margin-top: 4px; font-size: 11.5px; line-height: 1.4;">'
+            f"Decision: {dec_span} | Party: <b>{party_str}</b> | "
+            f"Refund: <b>{refund_disp}</b> | Conf: {conf_disp}"
+            f"{rat_html}"
             f"</div>",
             unsafe_allow_html=True,
         )
         if p.claims:
-            st_module.markdown(
-                '<div style="font-size: 11px; font-weight: 600; color: #475569; '
-                'margin-top: 6px;">Claim Breakdown:</div>',
-                unsafe_allow_html=True,
-            )
             for claim in p.claims:
                 cid = claim.get("claim_id", "")
                 verdict = claim.get("verdict", "")
                 refs = claim.get("evidence_refs", [])
                 refs_str = ", ".join(f"<code>{r}</code>" for r in refs) if refs else "None"
                 st_module.markdown(
-                    f'<div style="font-size: 11px; padding: 2px 0;">'
+                    f'<div style="font-size: 11px; padding: 1px 0;">'
                     f"• <code>{escape(cid)}</code>: <b>{escape(verdict)}</b> "
-                    f"(Evidence: {refs_str})</div>",
+                    f"({refs_str})</div>",
                     unsafe_allow_html=True,
                 )
 
     # 4. Verifier Agent
-    with st_module.expander("🛡️ Phase 4: Invariants & Provenance Verification", expanded=True):
+    with st_module.expander("4. Verifier", expanded=True):
         st_module.markdown(
-            render_agent_badge_html("verifier_agent", "Invariant Verifier"),
+            render_agent_badge_html("verifier_agent", "Verifier"),
             unsafe_allow_html=True,
         )
         v = process.verifier_agent
         status_color = "#16A34A" if v.passed else "#DC2626"
-        status_text = "PASSED ALL INVARIANTS" if v.passed else "VERIFICATION FAILED"
+        status_text = "PASSED" if v.passed else "FAILED"
         st_module.markdown(
-            f'<div style="margin-top: 4px; font-weight: 600; font-size: 12px; '
+            f'<div style="margin-top: 4px; font-weight: 600; font-size: 11.5px; '
             f'color: {status_color};">Status: {status_text}</div>',
             unsafe_allow_html=True,
         )
         notes_html = "".join(f"<li>{escape(n)}</li>" for n in v.notes)
         st_module.markdown(
-            f'<ul style="margin-top: 4px; margin-bottom: 2px; padding-left: 18px; '
-            f'font-size: 11.5px; color: #334155;">{notes_html}</ul>',
+            f'<ul style="margin-top: 2px; margin-bottom: 2px; padding-left: 18px; '
+            f'font-size: 11px; color: #334155;">{notes_html}</ul>',
             unsafe_allow_html=True,
         )

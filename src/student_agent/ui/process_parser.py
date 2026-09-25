@@ -135,26 +135,21 @@ def parse_case_process(
     # Specialist steps
     order_step = SpecialistStep(
         actor="order_agent",
-        role_title="Order / Product Specialist",
+        role_title="Order",
         tool_calls=order_tools,
-        summary=f"Queried {len(order_tools)} order tools. Checked catalog, sellers, and items.",
+        summary=f"{len(order_tools)} tool calls",
     )
     shipment_step = SpecialistStep(
         actor="shipment_agent",
-        role_title="Shipment Specialist",
+        role_title="Shipment",
         tool_calls=shipment_tools,
-        summary=(
-            f"Queried {len(shipment_tools)} tracking tools. "
-            "Evaluated delivery milestones and delays."
-        ),
+        summary=f"{len(shipment_tools)} tool calls",
     )
     payment_step = SpecialistStep(
         actor="payment_agent",
-        role_title="Payment / Refund Specialist",
+        role_title="Payment",
         tool_calls=payment_tools,
-        summary=(
-            f"Queried {len(payment_tools)} financial tools. Reconciled payments, fees, and refunds."
-        ),
+        summary=f"{len(payment_tools)} tool calls",
     )
 
     # Policy step
@@ -172,9 +167,9 @@ def parse_case_process(
     # Verifier step
     verifier_notes: list[str] = []
     if schema_valid:
-        verifier_notes.append("Output JSON conforms to day09-l3b-output-v2 schema")
+        verifier_notes.append("Schema: valid")
     if invariants_passed:
-        verifier_notes.append("Passed financial math, timeline chronology, and evidence provenance")
+        verifier_notes.append("Invariants: passed")
     verifier_step = VerifierStep(
         passed=verifier_completed or bool(output),
         schema_valid=schema_valid,
